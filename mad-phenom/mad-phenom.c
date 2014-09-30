@@ -20,15 +20,8 @@ along with mad-phenom.  If not, see <http://www.gnu.org/licenses/>.
 #include <avr/wdt.h>
 #include <stdbool.h>
 
-#include "Globals.h"
-#include "Common.h"
-#include "Menu.h"
-#include "Trigger.h"
-#include "PushButton.h"
-
 volatile uint32_t millis = 0;
 uint8_t counter = 0;
-bool triggerPulled = false;
 
 // This interrupt should occur approx. 3906 times per second
 // divide by 4 to get an approx millisecond
@@ -41,31 +34,48 @@ ISR(TIM0_COMPA_vect) {
 	}
 }
 
-int main(void) {
+void redOff() {
+	PORTA &= ~(1 << PINA1); // RED
+}
 
+void greenOff() {
+	PORTA &= ~(1 << PINA2); // GREEN
+}
+
+void redOn() {
+	PORTA |= (1 << PINA1); // RED
+}
+
+void greenOn() {
+	PORTA |= (1 << PINA2); // RED
+}
+
+void solenoidOn() {
+	PORTA |= (1 << PINA7);
+}
+
+void solenoidOff() {
+	PORTA &= ~(1 << PINA7);
+}
+
+int main(void) {
 	TCCR0B |= (1 << CS01);  // Enable timer with 1/8th prescale
 	TIMSK0 |= 1 << OCIE0A; // Configure Timer0 for Compare Match
 	OCR0A = 255; // Match at 200
 	
 	sei();  // Enable global interrupts
 	
-	initialize();
-	
+	// outputs
 	DDRA |= (1 << PINA1); // Pin 12 - Red LED
 	DDRA |= (1 << PINA2); // Pin 11 - Green LED
 	DDRA |= (1 << PINA7); // Pin 6  - Solenoid
 	
+	// inputs
 	DDRB &= ~(1 << PINB1); // Pin 3 - Push button
 	DDRB &= ~(1 << PINB2); // Pin 5 - Trigger Pin 1
 	DDRA &= ~(1 << PINA6); // Pin 7 - Trigger Pin 2
 
-	// Other unknown pins
-	//DDRA |= (1 << PINA0); // Pin 13
-	//PORTA |= (1 << PINA0); // 13 - HIGH
-#ifdef X7CLASSIC
-	DDRA |= (1 << PINA3); // Pin 10 - Power pin
-	PORTA |= (1 << PINA3); // 10 - HIGH
-#endif
+	// Set LOW
 	//PORTA &= ~(1 << PINA4);	// 9 - LOW
 	//PORTA &= ~(1 << PINA5);	// 8 - LOW
 	
@@ -76,96 +86,26 @@ int main(void) {
 	// Set Pushbutton HIGH
 	PORTB |= (1 << PINB1);
 
-#ifdef X7CLASSIC
-	// Selector switch on pin 2
-	DDRB &= ~(1 << PINB0); // Pin 2
-	PORTB |= (1 << PINB0); // Pin 2 set HIGH
-#endif
+	uint32_t lastUpdated = millis;
+	int mode = 0;
 
 	// If the button is held during startup, enter config mode.
-	uint16_t buttonHeldTime = 0;
-	bool configMode = false;
-	while ((PINB & (1 << PINB1)) <= 0) {
-		delay_ms(1);
-		
-		// Prevent overflow
-		buttonHeldTime++;
-		if (buttonHeldTime > 20000) {
-			buttonHeldTime = 20000;
+	while (true) {
+		if (mode == 0 && (millis - lastUpdated) >= 1000) {
+			redOff();
+			greenOn();
+			solenoidOn();
+			lastUpdated = millis;
+			mode = 1;
 		}
-	}
-	
-	if (buttonHeldTime >= 1000) {
-		configMode = true;
-	}
 
-#ifdef DWELL_DEBOUNCE
-    bool advancedMenu = 0;
-	if (buttonHeldTime >= 10000) {
-		advancedMenu = 1;
-	}
-#endif
-	
-	if (configMode) {
-		// Initialize interrupts for the menu system
-		PCMSK1 |= (1 << PCINT10);  //Enable interrupts on PCINT10 (trigger)
-		PCMSK1 |= (1 << PCINT9);  // Enable interrupts for the push button
-		GIMSK = (1 << PCIE1);    //Enable interrupts period for PCI0 (PCINT11:8
-		
-#ifdef DWELL_DEBOUNCE
-		if (advancedMenu) {
-			advancedConfig();
-		} else {
-			handleConfig();
-		}		
-#else
-		handleConfig();
-#endif				
-	} else { // Normal run mode
-		for (;;) {
-			// This prevents time from changing within an iteration
-			trigger_run(&millis);
-			pushbutton_run(&millis);
+		if (mode == 1 && (millis - lastUpdated) >= 20) {
+			greenOff();
+			redOn();
+			solenoidOff();
+			lastUpdated = millis;
+			mode = 0;
 		}
-	}		
+	}	
 }
 
-ISR(PCINT1_vect) {
-	uint16_t buttonHeldTime = 0;
-
-	#ifdef X7CLASSIC
-	while ((PINB & (1 << PINB1)) <= 0) {
-		delay_ms(1);
-
-		buttonHeldTime++;
-		if (buttonHeldTime > 5000) {
-			// Power down
-			PORTA &= ~(1 << PINA3);
-		}
-	}
-#endif
-
-	buttonHeldTime = 0;
-
-	if (!triggerPulled
-		&& macHold()) { // Trigger Held
-		triggerPulled = true;
-
-		delay_ms(PULL_DEBOUNCE);
-		while (macHold()) { // Trigger Held
-			delay_ms(1);
-			buttonHeldTime += 1;
-			
-			if (buttonHeldTime > 3000) {
-				buttonHeldTime = 3000;
-			}
-		}
-		configTriggerPulled(buttonHeldTime);
-	}
-
-	if (triggerPulled
-	    && macRelease()) { // && triggerReleased()) {
-		delay_ms(RELEASE_DEBOUNCE);
-		triggerPulled = false;
-	}
-}
